@@ -5,5 +5,3 @@ It is designed to ensure full transparency, reproducibility, and accessibility o
 
 BAOUA-DEDRICH Edgar, DUNOYER Blandine, LECOMPTE Agathe, NEWBY Laure, and SIMON Yohan
 From the Palm team <3
-
-Best memories in Paracou 
