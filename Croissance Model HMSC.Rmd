@@ -1,0 +1,353 @@
+---
+title: "Croissance inférence bayesienne"
+author: "Edgar"
+date: "2025-11-24"
+output: html_document
+---
+
+# HMSC
+
+## Species model
+
+Loading data
+
+```{r include=FALSE}
+library(tidyverse)
+library(ggplot2)
+library(dplyr)
+library(Hmsc)
+
+dataset_growth <-read.csv("dataset_growth.csv") 
+```
+
+Prepare the response matrix and covariables
+
+```{r}
+#Transform the  dataset to the response matrix, one specie per colums
+
+Y_wide <- dataset_growth %>%
+  select(.obsID, Nom_complet, Statut_growth) %>%
+  pivot_wider(
+    names_from = Nom_complet,
+    values_from = Statut_growth,
+    values_fill = NA_real_           # NA si espèce ≠ celle de la ligne
+  ) %>%
+  arrange(.obsID)
+
+
+Y <- as.matrix(Y_wide %>% select(-.obsID))
+rownames(Y) <- Y_wide$.obsID  # Creation of the matrix Y, the response variable
+
+
+XData <- dataset_growth %>%
+  select(Palm_coverage,TWI_mean,dST_juv_mean,dST_adult_mean,delta_Lum, DBHt, Treatment) %>%
+  mutate(
+    Treatment = as.factor(Treatment)
+  )# the data frame of the covariates
+
+studyDesign <- dataset_growth %>%
+  arrange(.obsID) %>%
+  select(ID, Placette, year, delta_time) %>%
+  mutate(
+    ID = as.factor(ID),
+    Placette = as.factor(Placette),
+    year = as.factor(year),
+    delta_time = as.factor(delta_time)
+    ) %>%
+  as.data.frame() #the studyplan, how we set hierarchical structure in our data. It's a data frame of correspondence between sampling units and units on different levels of latent factors
+
+#Set a random effect on individuals, we modelise leur dependance
+rL_ID  <- HmscRandomLevel(units = studyDesign$ID) # Specify the structure of the random factor to the individual level and take into  dependancy.
+rL_Placette <- HmscRandomLevel(units = studyDesign$Placette) # Specify the structure of the random factor to the subplot level and take into  dependancy.
+ranLevels <- list(ID = rL_ID, Placette = rL_Placette)
+
+```
+
+Fit model
+
+```{r}
+library(Hmsc)
+library(coda)
+
+m_sp <- Hmsc(Y=Y, 
+          XData = XData,
+          XFormula = ~ DBHt + Palm_coverage + TWI_mean + delta_Lum + dST_adult_mean + dST_juv_mean + Treatment,
+          studyDesign = studyDesign,
+          ranLevels = ranLevels,
+          distr = "probit"
+          )
+```
+
+Do the sampler
+
+```{r eval=FALSE, include=FALSE}
+hm_sp <- sampleMcmc(m_sp,
+           samples = 500,
+           transient = 200,
+           thin = 10,
+           nChains = 2,
+           verbose = TRUE) #5200 iteration in total for the sampler
+
+save(hm_sp, "hmsc_mod2_sp")
+```
+
+## Posterior analysis
+
+### Cross-validation
+
+Check the convergence of the MCMC chains by Gelman diagnostics
+
+```{r}
+load("hmsc_mod2_sp.Rdata") # This is the posterior distribution 
+mpost_sp = convertToCodaObject(hm_sp)
+
+### 1 — Beta ###
+cat("\n=== Convergence des BETA ===\n")
+print(effectiveSize(mpost_sp$Beta))
+print(gelman.diag(mpost_sp$Beta, multivariate = FALSE)$psrf)
+plot(mpost_sp$Beta)
+
+
+### 2 — V (Random effect) ###
+cat("\n=== Convergence des V ===\n")
+print(effectiveSize(mpost_sp$V))
+print(gelman.diag(mpost_sp$V, multivariate = FALSE)$psrf)
+plot(mpost_sp$V)
+
+
+
+# Trace for Beta
+traceplot(mpost_sp$Beta)
+
+# Check the autocorrelation
+autocorr.plot(mpost_sp$Beta)
+```
+
+```{r}
+preds <-  computePredictedValues(hm_sp)
+MF <- evaluateModelFit(hm_sp,preds) #R2 
+print(MF)
+```
+
+### Variance Partitioning
+
+```{r}
+VP = computeVariancePartitioning(hm_sp)
+plotVariancePartitioning(hm_sp, VP)
+
+```
+
+Look the estimated parameters
+
+```{r}
+beta_posterior <- getPostEstimate(hm_sp,parName = "Beta")
+
+# Plot environmental effects
+plotBeta(hm_sp, post = beta_posterior)
+
+```
+
+## Graphical representation
+
+### Variance
+
+```{r}
+
+library(ggplot2)
+library(reshape2)
+library(dplyr)
+
+### Extraction et mise en forme ----
+
+vp <- as.data.frame(VP$vals)
+vp$Variable <- rownames(vp)
+
+vp_long <- melt(vp, id.vars = "Variable",
+                variable.name = "Species",
+                value.name = "Variance")
+
+vp_long <- vp_long %>%
+  mutate(Variable = recode(Variable,
+                           "Palm_coverage"   = "OPCI",
+                           "TWI_mean"        = "TWI",
+                           "DBHt"            = "DBH",
+                           "delta_Lum"       = "ΔLum_d",
+                           "dST_adult_mean"  = "ΔG_a",
+                           "dST_juv_mean"    = "ΔG_j"
+  ))
+
+### Ordre des variables 
+
+var_means <- vp_long %>%
+  group_by(Variable) %>%
+  summarise(mean_var = mean(Variance))
+
+# Ordre des variables,  Palm en bas pour le mettre en valeur et random en haut 
+var_means <- vp_long %>%
+  group_by(Variable) %>%
+  summarise(mean_var = mean(Variance))
+
+env_vars <- var_means %>%
+  filter(!Variable %in% c("OPCI","DBH", "Random: ID", "Random: Placette")) %>%
+  arrange(desc(mean_var)) %>%
+  pull(Variable)
+
+# ordre final : random effects en haut, variables environnementales, OPCI en bas
+var_order <- c("Random: ID", "Random: Placette", env_vars, "DBH","OPCI")
+
+vp_long$Variable <- factor(vp_long$Variable, levels = var_order)
+
+
+### --- 3. Palette de couleurs publication-ready ---
+
+cols <- c(
+  # Variables environnementales
+  "OPCI"             = "#D73027",  # rouge foncé, base
+  "DBH"              = "#FC8D59",  # orange clair
+  "TWI"              = "#E0F3F8",  # bleu très clair
+  "ΔLum_d"           = "#FEE090",  # jaune clair
+  "ΔG_a"             = "#91BFDB",  # bleu ciel
+  "ΔG_j"             = "#4575B4",  # bleu foncé
+  "Treatment"        = "#66BD63",  # vert
+  
+  # Effets aléatoires en gris
+  "Random: ID"       = "#A0A0A0",  # gris moyen
+  "Random: Placette" = "#505050"   # gris foncé
+)
+
+### --- 4. Graphique final ----
+
+ggplot(vp_long, aes(x = Species, y = Variance, fill = Variable)) +
+  geom_bar(stat = "identity", width = 0.85) +
+  scale_fill_manual(values = cols) +
+  theme_bw(base_size = 14) +
+  theme(
+    axis.text.x = element_text(angle = 35, hjust = 1),
+    panel.grid = element_blank(),
+    axis.title.x = element_blank(),   # supprime le titre de l'axe x
+    axis.title.y = element_blank(),   # supprime le titre de l'axe y
+    legend.position = "right"
+  ) +
+  ggtitle("Variance partitioning")
+ 
+
+
+
+```
+
+### Beta parameters
+
+```{r}
+
+##### Parametre beta 
+beta_posterior <- getPostEstimate(hm_sp,parName = "Beta")
+
+# Plot environmental effects
+plotBeta(hm_sp, post = beta_posterior, supportLevel = 0.7) 
+
+
+# Récupérer l’estimation postérieure
+
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+
+beta_post <- getPostEstimate(
+  hm_sp,
+  parName = "Beta",
+  q = c(0.025, 0.975)  # pour les intervalles de crédibilité 95%
+)
+
+# Lower = 2.5%
+lower_mat <- beta_post$q[1,,]  # dimensions : 10 x 7
+# Upper = 97.5%
+upper_mat <- beta_post$q[2,,]
+
+mean_mat <- beta_post$mean
+
+cov_names <- c("Intercept", "DBHt", "Palm_coverage", "TWI_mean", 
+               "delta_Lum", "dST_adult_mean", "dST_juv_mean", 
+               "Treatment1", "Treatment2", "Treatment3")
+
+species_names <- colnames(mean_mat)
+if(is.null(species_names)) species_names <- c("Bocoa prouacensis", "Sterculia pruriens", 
+                                              "Symphonia sp. 1", "Virola michelii", 
+                                              "Iryanthera hostmannii", "Jacaranda copaia", 
+                                              "Eperua falcata")
+
+# Nommer les lignes et colonnes
+rownames(mean_mat) <- cov_names
+rownames(lower_mat) <- cov_names
+rownames(upper_mat) <- cov_names
+colnames(mean_mat) <- species_names
+colnames(lower_mat) <- species_names
+colnames(upper_mat) <- species_names
+
+# Create long format data frame
+
+beta_table <- data.frame(covariate = cov_names, mean_mat) %>%
+  pivot_longer(cols = -covariate, names_to = "species", values_to = "mean") %>%
+  left_join(
+    data.frame(covariate = cov_names, lower_mat) %>%
+      pivot_longer(cols = -covariate, names_to = "species", values_to = "lower"),
+    by = c("covariate","species")
+  ) %>%
+  left_join(
+    data.frame(covariate = cov_names, upper_mat) %>%
+      pivot_longer(cols = -covariate, names_to = "species", values_to = "upper"),
+    by = c("covariate","species")
+  ) %>%
+  mutate(signif = ifelse(lower > 0 | upper < 0, "yes", "no"))
+
+##ggplot
+
+
+ggplot(beta_table, aes(x = species, y = mean, color = signif)) +
+  geom_point(position = position_dodge(width = 0.7), size = 3) +
+  geom_errorbar(aes(ymin = lower, ymax = upper), width = 0.2,
+                position = position_dodge(width = 0.7)) +
+  facet_wrap(~covariate, scales = "free_y") +
+  theme_minimal() +
+  labs(y = "Paramètre Beta", x = "Espèce", color = "Effet significatif") +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+
+
+#Other way of representation heatmap 
+library(dplyr)
+library(knitr)
+library(kableExtra)
+
+beta_table_clean <- beta_table %>%
+  mutate(
+    IC = paste0("[", round(lower, 3), ", ", round(upper, 3), "]"),
+    mean = round(mean, 3)
+  ) %>%
+  select(covariate, species, mean, IC) %>%
+  arrange(covariate, species)
+
+
+kable(beta_table_clean,
+      caption = "Estimated parameters",
+      col.names = c("Covariables", "Species", "Mean", "IC 95%"),
+      align = "l") %>%
+  kable_styling(full_width = FALSE, bootstrap_options = c("striped", "hover"))
+
+
+library(ggplot2)
+#Heat map
+ggplot(beta_table, aes(x = species, y = covariate, fill = mean)) +
+  geom_tile(color = "white") +
+  geom_text(aes(label = round(mean, 2)), size = 3) +
+  scale_fill_gradient2(
+    low = "blue",
+    mid = "white",
+    high = "red",
+    midpoint = 0,
+    name = "Beta moyen"
+  ) +
+  theme_minimal() +
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1),
+    axis.title = element_blank())
+```

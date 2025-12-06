@@ -1,0 +1,155 @@
+---
+title: "Cox Models"
+format: html
+editor: visual
+---
+
+# Loading data
+
+```{r}
+#| include: false
+
+library(dplyr)
+library(readr)
+library(tidyverse)
+
+data_model <- read.csv("datasmodel2.csv")
+```
+
+# Cox Model
+
+## Individual strategies
+
+We imput this model on the hazard ratio :
+
+$$
+h(t∣X)=h_0(t)⋅exp(β_1DBH+β_2ΔH+β_3TWI+β_4ΔLum+β_5Palm+β_6ΔG+\alpha_1 Treatment_i + \alpha_2Strategy_i)
+$$
+
+```{r}
+library(survival)
+
+# Tes listes d'espèces
+shade_tolerant_species <- c(
+  "Bocoa prouacensis",
+  "Iryanthera hostmannii",
+  "Iryanthera sagotiana",
+  "Pradosia cochlearia",
+  "Vouacapoua americana"
+)
+
+pioneer_species <- c(
+  "Virola michelii",
+  "Tachigali melinonii",
+  "Sterculia multivula",
+  "Sterculia pruriens",
+  "Schefflera decaphylla",
+  "Jacaranda copaia",
+  "Goupia glabra",
+  "Carapa surinamensis"
+)
+
+# Add the Strategy factor
+data_model$Strategy <- ifelse(data_model$Nom_complet %in% shade_tolerant_species, "shade",
+                        ifelse(data_model$Nom_complet %in% pioneer_species, "Heliophilus",
+                               "m_tolerant"))
+
+# Convertir en facteur si utile
+data_model$Strategy <- factor(data_model$Strategy,
+                        levels = c("shade", "m_tolerant", "Heliophilus"))
+
+
+# Define the response variable
+cox_object <- Surv(event = data_model$Statut,
+                   time =data_model$delta_time)
+
+#Aesthetic renaming the variables
+data_model <- data_model |>
+  dplyr::rename(
+    OPCI = Palm_coverage,
+    TWI = TWI_mean,
+    DBH = DBHt,
+    ΔLum = delta_Lum,
+    ΔG_a = dST_adult_mean,
+    ΔG_j = dST_juv_mean
+  )
+
+data_model$Treatment <- as.factor(data_model$Treatment)
+data_model$Treatment <- factor(
+  data_model$Treatment,
+  levels = c("Natural_Forest", "Logging", 
+             "Logging_and_Devitalization",
+             "Intensive_Logging_and_Devitalization"),
+  labels = c("T0", "T1", "T2", "T3")
+)
+
+#Set the reference level of factors
+data_model$Treatment <- relevel(data_model$Treatment, ref = "T0")
+
+data_model$Strategy <- relevel(data_model$Strategy, ref = "m_tolerant")
+
+
+#Model OPCI and with all variables
+modelcomp1 <- coxph(cox_object ~  OPCI , data = data_model)
+
+modelcomp2 <- coxph(cox_object ~ DBH + OPCI + TWI + ΔLum + ΔG_a + ΔG_j + Treatment + Strategy , data = data_model)
+
+AIC(modelcomp1, modelcomp2)
+
+summary(modelcomp2)
+
+summary(modelcomp1)
+
+```
+
+Cross-validation
+
+```{r}
+test.ph <- cox.zph(modelcomp)
+print(test.ph)
+plot(test.ph)
+```
+
+```{r}
+data_model$Nom_complet <- as.factor(data_model$Nom_complet)
+
+library(ggplot2)
+library(tidyverse)
+
+
+data_model %>%
+  count(Nom_complet) %>%
+  arrange(desc(n)) %>%
+  ggplot(aes(x = reorder(Nom_complet, -n), y = n, fill = Nom_complet)) +
+  geom_col() +
+  scale_fill_discrete(name = "Espèces") +
+  labs(x = "Nom des espèces", y = "Nombre d'individus") +
+  theme_minimal() +
+  theme(
+    axis.text.x = element_text(angle = 90, vjust = 0.5),
+    legend.position = "none"   # enlève la légende si trop longue
+  )
+
+```
+
+Table with all estimated parameters and hazard ratio
+
+```{r}
+library(survminer)
+library(broom)
+library(gt)
+library(forestmodel)
+
+forest_model(
+  modelcomp2,
+  factor_separate_line = TRUE,
+  recalculate_height = TRUE
+)
+
+p <- forest_model(
+  modelcomp,
+  factor_separate_line = TRUE,
+  recalculate_height = TRUE
+)
+
+```
