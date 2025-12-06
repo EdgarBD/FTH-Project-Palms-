@@ -34,7 +34,6 @@ Y_wide <- dataset_growth %>%
   ) %>%
   arrange(.obsID)
 
-
 Y <- as.matrix(Y_wide %>% select(-.obsID))
 rownames(Y) <- Y_wide$.obsID  # Creation of the matrix Y, the response variable
 

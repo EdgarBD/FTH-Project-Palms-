@@ -151,5 +151,5 @@ p <- forest_model(
   factor_separate_line = TRUE,
   recalculate_height = TRUE
 )
-
+ 
 ```
